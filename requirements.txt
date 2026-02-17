@@ -1,0 +1,3 @@
+arc-agi
+gymnasium
+gymnasium[atari]
