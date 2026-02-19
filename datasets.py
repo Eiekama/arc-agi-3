@@ -3,7 +3,6 @@ from arcengine import GameAction, FrameDataRaw, GameState, SimpleAction, Complex
 import gymnasium as gym
 import numpy as np
 from enum import Enum
-from typing import Literal
 
 class Environment:
     class Benchmark(Enum):
@@ -26,6 +25,9 @@ class Environment:
         # The raw game state will be represented as a 64x64 RGB image
         self.observation_dim = (3, 64, 64)
 
+        self.prev_obs = None
+        self.prev_info = None
+
     @property
     def as_arc(self) -> arc_agi.EnvironmentWrapper:
         assert isinstance(self._env, arc_agi.EnvironmentWrapper)
@@ -38,8 +40,8 @@ class Environment:
 
     def unify_obs(
         self,
-        obs: FrameDataRaw | np.ndarray[tuple[Literal[210], Literal[160], Literal[3]]]
-    ) -> np.ndarray[tuple[Literal[3], Literal[64], Literal[64]]]:
+        obs: FrameDataRaw | np.ndarray
+    ) -> np.ndarray:
         '''
         Maps the different state spaces from various benchmarks to a common representation
 
@@ -57,14 +59,16 @@ class Environment:
 
         raise NotImplementedError
 
-    def reset(self) -> np.ndarray[tuple[Literal[3], Literal[64], Literal[64]]]:
+    def reset(self) -> np.ndarray:
         if self.benchmark == self.Benchmark.ARC:
             obs = self.as_arc.reset()
+            if (obs is None):
+                raise RuntimeError("[Environment] Failed to reset ARC environment")
         elif self.benchmark == self.Benchmark.ATARI:
             obs, _ = self.as_gym.reset()
         return self.unify_obs(obs) # can consider adding an info dict if it's helpful later
 
-    def step(self, action, xy=None) -> tuple[np.ndarray[tuple[Literal[3], Literal[64], Literal[64]]], bool, bool]:
+    def step(self, action, xy=None) -> tuple[np.ndarray, bool, bool]:
         '''
         :param uint8 action: An index in the range [0, 7] that maps to the respective arc-agi action
         :param (uint16, uint16) xy: If action is ACTION6, xy should contain coordinates for the action
@@ -78,12 +82,14 @@ class Environment:
                 obs = self.as_arc.step(GameAction(action, ComplexAction), {"x": xy[0], "y": xy[1]})
             else:
                 obs = self.as_arc.step(GameAction(action, SimpleAction))
+            if (obs is None):
+                raise RuntimeError("[Environment] Failed to step ARC environment")
             done = obs.state == GameState.WIN or obs.state == GameState.GAME_OVER
             won = obs.state == GameState.WIN
         elif self.benchmark == self.Benchmark.ATARI:
             obs, reward, terminated, truncated, _ = self.as_gym.step(action)
             done = terminated or truncated
-            won = reward > 0 and terminated #TODO: might need to verify this assumption
+            won = float(reward) > 0 and terminated #TODO: might need to verify this assumption
 
         return self.unify_obs(obs), done, won # can consider adding an info dict if it's helpful later
 
