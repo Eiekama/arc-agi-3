@@ -4,6 +4,8 @@ import gymnasium as gym
 import numpy as np
 from enum import Enum
 
+from color import ColorMapGenerator
+
 class Environment:
     class Benchmark(Enum):
         ARC = "arc"
@@ -25,8 +27,13 @@ class Environment:
         # The raw game state will be represented as a 64x64 RGB image
         self.observation_dim = (3, 64, 64)
 
+        self.obs = None
+        self.info = None
         self.prev_obs = None
         self.prev_info = None
+
+        if self.benchmark == self.Benchmark.ARC:
+            self.map_gen = ColorMapGenerator()
 
     @property
     def as_arc(self) -> arc_agi.EnvironmentWrapper:
@@ -37,7 +44,7 @@ class Environment:
     def as_gym(self) -> gym.Env:
         assert isinstance(self._env, gym.Env)
         return self._env
-
+    
     def unify_obs(
         self,
         obs: FrameDataRaw | np.ndarray
@@ -64,6 +71,7 @@ class Environment:
             obs = self.as_arc.reset()
             if (obs is None):
                 raise RuntimeError("[Environment] Failed to reset ARC environment")
+            self.color_map = self.map_gen.generate()
         elif self.benchmark == self.Benchmark.ATARI:
             obs, _ = self.as_gym.reset()
         return self.unify_obs(obs) # can consider adding an info dict if it's helpful later
@@ -74,7 +82,7 @@ class Environment:
         :param (uint16, uint16) xy: If action is ACTION6, xy should contain coordinates for the action
         :return observation (ndarray): RGB image of shape (3, 64, 64)
         :return done (bool): Whether episode has ended. If true, user needs to call reset()
-        :return won (bool): Whether the episode was won (only true if done is true)
+        :return won (bool): Whether the level was won (can be true even if done is false)
         '''
         if self.benchmark == self.Benchmark.ARC:
             if action == 6:
@@ -84,14 +92,24 @@ class Environment:
                 obs = self.as_arc.step(GameAction(action, SimpleAction))
             if (obs is None):
                 raise RuntimeError("[Environment] Failed to step ARC environment")
+            if obs.full_reset:
+                self.color_map = self.map_gen.generate()
+            info = {
+                "levels_completed": obs.levels_completed,
+            }
             done = obs.state == GameState.WIN or obs.state == GameState.GAME_OVER
-            won = obs.state == GameState.WIN
+            won = (obs.state == GameState.WIN or 
+                   (obs.levels_completed > self.prev_info["levels_completed"] if self.prev_info else False))
         elif self.benchmark == self.Benchmark.ATARI:
-            obs, reward, terminated, truncated, _ = self.as_gym.step(action)
+            obs, reward, terminated, truncated, info = self.as_gym.step(action)
             done = terminated or truncated
             won = float(reward) > 0 and terminated #TODO: might need to verify this assumption
 
-        return self.unify_obs(obs), done, won # can consider adding an info dict if it's helpful later
+        self.prev_obs = self.obs
+        self.prev_info = self.info
+        self.obs = self.unify_obs(obs)
+        self.info = info
+        return self.obs, done, won
 
 
 if __name__ == "__main__":
