@@ -1,26 +1,24 @@
 import colorsys
 import numpy as np
 
-def str_to_rgb(hex_str: str):
-    hex_str = hex_str.strip()
-    if hex_str.startswith("#"):
-        hex_str = hex_str[1:]
+def hex_to_rgb(hex_str: str):
+    hex_str = hex_str.lstrip("#")
     r = int(hex_str[0:2], 16)
     g = int(hex_str[2:4], 16)
     b = int(hex_str[4:6], 16)
     return r, g, b
 
-def rgb_to_str(r: int, g: int, b: int) -> str:
+def rgb_to_hex(r: int, g: int, b: int) -> str:
     if not all(0 <= v <= 255 for v in (r, g, b)):
         raise ValueError("RGB components must be in 0–255")
     return f"#{r:02X}{g:02X}{b:02X}FF"
 
-def str_to_hsv(hex_str: str):
-    r, g, b = str_to_rgb(hex_str)
+def hex_to_hsv(hex_str: str):
+    r, g, b = hex_to_rgb(hex_str)
     h, s, v = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
     return h, s, v
 
-def hsv_to_str(h: float, s: float, v: float) -> str:
+def hsv_to_hex(h: float, s: float, v: float) -> str:
     """
     Convert HSV to #RRGGBB hex.
     H in degrees [0, 360), S and V in [0, 1].
@@ -32,7 +30,7 @@ def hsv_to_str(h: float, s: float, v: float) -> str:
     r = int(round(r_f * 255))
     g = int(round(g_f * 255))
     b = int(round(b_f * 255))
-    return rgb_to_str(r, g, b)
+    return rgb_to_hex(r, g, b)
 
 HUE = np.array([0.420, 0.898, 0.009, 0.580, 0.144, 0.077, 0.960, 0.300, 0.767]) # reuse 0 for 0-5, 1 and 3 need to be repeated once
 SAT = np.array([0.747, 0.518, 0.803, 0.882, 0.436, 1.000, 0.894, 0.877, 0.765, 0.598])
@@ -68,12 +66,12 @@ class ColorMapGenerator:
         color_map[:, 2] = VALUE
         #TODO: can choose to add small jitter to hsv values, but check the baseline for now
 
-        hex_color_map = {i: hsv_to_str(*color_map[i]) for i in range(16)}
+        hex_color_map = {i: hsv_to_hex(*color_map[i]) for i in range(16)}
         return hex_color_map
 
 def visualize_color_map(color_map: dict[int, str]):
     import matplotlib.pyplot as plt
-    colors = [str_to_rgb(color_map[i]) for i in range(16)]
+    colors = [hex_to_rgb(color_map[i]) for i in range(16)]
     plt.figure(figsize=(8, 2))
     plt.bar(range(16), [1]*16, color=[(r/255, g/255, b/255) for r, g, b in colors])
     plt.xticks(range(16))

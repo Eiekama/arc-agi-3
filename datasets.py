@@ -1,10 +1,15 @@
 import arc_agi
 from arcengine import GameAction, FrameDataRaw, GameState, SimpleAction, ComplexAction
 import gymnasium as gym
+
 import numpy as np
+import torch
+import torch.nn.functional as F
+
+import math
 from enum import Enum
 
-from color import ColorMapGenerator
+from color import ColorMapGenerator, hex_to_rgb
 
 class Environment:
     class Benchmark(Enum):
@@ -14,13 +19,15 @@ class Environment:
     def __init__(
         self,
         benchmark: str,
-        env: arc_agi.EnvironmentWrapper | gym.Env
+        env: arc_agi.EnvironmentWrapper | gym.Env,
+        seed=None,
     ):
         if (benchmark not in self.Benchmark):
             raise ValueError(f"[Environment] Unsupported benchmark: {benchmark}")
         
         self._env = env
         self.benchmark = self.Benchmark(benchmark)
+        self.rng = np.random.default_rng(seed)
 
         # Indices 0-7 will be 0-1 inputs for the respective arc-agi actions and 8-9 will contain (x, y) for ACTION6
         self.action_dim = (10,)
@@ -34,6 +41,8 @@ class Environment:
 
         if self.benchmark == self.Benchmark.ARC:
             self.map_gen = ColorMapGenerator()
+            self.color_map = self.generate_color_map()
+            self.target_size = self.rng.integers(64, 161)
 
     @property
     def as_arc(self) -> arc_agi.EnvironmentWrapper:
@@ -53,25 +62,58 @@ class Environment:
         Maps the different state spaces from various benchmarks to a common representation
 
         :param obs: observation returned by env.step() or env.reset()
-        :return observation (ndarray): rgb image of shape (3, 64, 64)
+        :return observation (ndarray): rgb image of shape (3, 210, 160)
         '''
         if self.benchmark == self.Benchmark.ARC:
-            #TODO: colormap indices
-            # the map is constant for each game and [re]randomized each time a new game (not level) is started
-            pass
-        elif self.benchmark == self.Benchmark.ATARI:
-            #TODO: downsize to 64x64
-            # do we preserve aspect and randomize padding? or stretch to fit?
-            pass
+            # the map and size is constant for each game and [re]randomized each time a new game (not level) is started
+            assert isinstance(obs, FrameDataRaw)
 
-        raise NotImplementedError
+            observation = obs.frame[-1]
+
+            # colormap indices
+            indices = np.searchsorted(range(16), observation)
+            values = np.array(list(self.color_map.values()))
+            observation = values[indices]
+
+            observation = observation.transpose(2, 0, 1) # to CHW
+
+            # randomly scale up image to at most 160x160
+            observation = F.interpolate(
+                torch.from_numpy(observation).to(torch.float32).unsqueeze(0), 
+                size = self.target_size,
+                mode="nearest-exact"
+            ).squeeze(0).numpy()
+
+            # pad to 210x160
+            t_pad = self.rng.integers(0, 210-self.target_size + 1)
+            b_pad = 210-self.target_size - t_pad
+            l_pad = self.rng.integers(0, 160-self.target_size + 1)
+            r_pad = 160-self.target_size - l_pad
+            observation = np.pad(observation, ((0, 0), (t_pad, b_pad), (l_pad, r_pad)), mode='constant', constant_values=self.rng.integers(0, 256))
+
+            return observation
+        
+        if self.benchmark == self.Benchmark.ATARI:
+            assert isinstance(obs, np.ndarray)
+
+            H, _, _ = obs.shape
+            if H > 210:
+                obs = obs[H//2 - 210//2 : H//2 + 210//2, :, :]
+            observation = obs.transpose(2, 0, 1) # to CHW
+            return observation
+        
+    def generate_color_map(self):
+        assert self.benchmark == self.Benchmark.ARC
+        color_map = self.map_gen.generate()
+        return {i: np.array(hex_to_rgb(color_map[i])) for i in range(16)}
 
     def reset(self) -> np.ndarray:
         if self.benchmark == self.Benchmark.ARC:
             obs = self.as_arc.reset()
             if (obs is None):
                 raise RuntimeError("[Environment] Failed to reset ARC environment")
-            self.color_map = self.map_gen.generate()
+            self.color_map = self.generate_color_map()
+            self.target_size = self.rng.integers(64, 161)
         elif self.benchmark == self.Benchmark.ATARI:
             obs, _ = self.as_gym.reset()
         return self.unify_obs(obs) # can consider adding an info dict if it's helpful later
@@ -80,7 +122,7 @@ class Environment:
         '''
         :param uint8 action: An index in the range [0, 7] that maps to the respective arc-agi action
         :param (uint16, uint16) xy: If action is ACTION6, xy should contain coordinates for the action
-        :return observation (ndarray): RGB image of shape (3, 64, 64)
+        :return observation (ndarray): RGB image of shape (3, 210, 160)
         :return done (bool): Whether episode has ended. If true, user needs to call reset()
         :return won (bool): Whether the level was won (can be true even if done is false)
         '''
@@ -93,7 +135,8 @@ class Environment:
             if (obs is None):
                 raise RuntimeError("[Environment] Failed to step ARC environment")
             if obs.full_reset:
-                self.color_map = self.map_gen.generate()
+                self.color_map = self.generate_color_map()
+                self.target_size = self.rng.integers(64, 161)
             info = {
                 "levels_completed": obs.levels_completed,
             }
@@ -111,12 +154,14 @@ class Environment:
         self.info = info
         return self.obs, done, won
 
-
 if __name__ == "__main__":
     import sys
     import numpy as np
     import matplotlib.pyplot as plt
     np.set_printoptions(threshold=sys.maxsize)
+
+    import ale_py
+    gym.register_envs(ale_py)
 
     arc = arc_agi.Arcade()
 
@@ -125,5 +170,37 @@ if __name__ == "__main__":
     #     print(game)
     #     print(f"{game.game_id}: {game.title}")
 
+
+    def render_3chw_image(arr, block=True):
+        """
+        Render a 3xHxW numpy array as an RGB image.
+        
+        Args:
+            arr: numpy array of shape (3, H, W) with values in [0, 1] or [0, 255]
+        
+        Returns:
+            matplotlib image plot
+        """
+        # Normalize to [0, 1] if needed (handles uint8 or float)
+        if arr.max() > 1.0:
+            arr = arr.astype(np.float32) / 255.0
+        
+        # Transpose to HWC for matplotlib
+        img = np.transpose(arr, (1, 2, 0))
+        
+        plt.figure(figsize=(8, 8))
+        plt.imshow(img)
+        plt.axis('off')
+        plt.show(block=block)
+        
     env = arc.make("ls20")
-    frame = env.observation_space.frame[0]
+    assert env is not None
+    test_arc = Environment("arc", env)
+    obs = env.reset()
+    assert obs is not None
+    render_3chw_image(test_arc.unify_obs(obs))
+
+    # env = gym.make("ALE/Casino-v5")
+    # test_atari = Environment("atari", env)
+    # obs, _ = env.reset()
+    # render_3chw_image(test_atari.unify_obs(obs))

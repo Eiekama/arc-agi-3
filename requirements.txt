@@ -1,3 +1,4 @@
 arc-agi
 gymnasium
 gymnasium[atari]
+torch
