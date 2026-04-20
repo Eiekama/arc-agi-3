@@ -43,6 +43,8 @@ class Environment:
             self.map_gen = ColorMapGenerator()
             self.color_map = self.generate_color_map()
             self.target_size = self.rng.integers(64, 161)
+            # padding for top and left respectively
+            self.padding = self.rng.integers(0, [210-self.target_size + 1, 160-self.target_size + 1])
 
     @property
     def as_arc(self) -> arc_agi.EnvironmentWrapper:
@@ -54,6 +56,18 @@ class Environment:
         assert isinstance(self._env, gym.Env)
         return self._env
     
+    @property
+    def available_actions(self) -> np.ndarray:
+        '''
+        :return actions (ndarray): list of indices, corresponding to arc agi actions
+        '''
+        if self.benchmark == self.Benchmark.ARC:
+            return np.array([action._value_ for action in self.as_arc.action_space])
+        elif self.benchmark == self.Benchmark.ATARI:
+            # remember to set full_action_space=True
+            return np.array(range(1, 6))
+        assert False
+
     def unify_obs(
         self,
         obs: FrameDataRaw | np.ndarray
@@ -85,13 +99,12 @@ class Environment:
             ).squeeze(0).numpy()
 
             # pad to 210x160
-            t_pad = self.rng.integers(0, 210-self.target_size + 1)
+            t_pad, l_pad = self.padding[0], self.padding[1]
             b_pad = 210-self.target_size - t_pad
-            l_pad = self.rng.integers(0, 160-self.target_size + 1)
             r_pad = 160-self.target_size - l_pad
             observation = np.pad(observation, ((0, 0), (t_pad, b_pad), (l_pad, r_pad)), mode='constant', constant_values=self.rng.integers(0, 256))
 
-            return observation
+            return observation / 255.0 # rescale to [0, 1]
         
         if self.benchmark == self.Benchmark.ATARI:
             assert isinstance(obs, np.ndarray)
@@ -100,7 +113,9 @@ class Environment:
             if H > 210:
                 obs = obs[H//2 - 210//2 : H//2 + 210//2, :, :]
             observation = obs.transpose(2, 0, 1) # to CHW
-            return observation
+            return observation / 255.0 # rescale to [0, 1]
+        
+        assert False # should never reach here
         
     def generate_color_map(self):
         assert self.benchmark == self.Benchmark.ARC
@@ -114,6 +129,8 @@ class Environment:
                 raise RuntimeError("[Environment] Failed to reset ARC environment")
             self.color_map = self.generate_color_map()
             self.target_size = self.rng.integers(64, 161)
+            self.padding = self.rng.integers(0, [210-self.target_size + 1, 160-self.target_size + 1])
+
         elif self.benchmark == self.Benchmark.ATARI:
             obs, _ = self.as_gym.reset()
         return self.unify_obs(obs) # can consider adding an info dict if it's helpful later
@@ -121,22 +138,27 @@ class Environment:
     def step(self, action, xy=None) -> tuple[np.ndarray, bool, bool]:
         '''
         :param uint8 action: An index in the range [0, 7] that maps to the respective arc-agi action
-        :param (uint16, uint16) xy: If action is ACTION6, xy should contain coordinates for the action
+        :param ndarray|None xy: If action is ACTION6, xy should contain coordinates for the action as a np array of shape (2,)
         :return observation (ndarray): RGB image of shape (3, 210, 160)
         :return done (bool): Whether episode has ended. If true, user needs to call reset()
         :return won (bool): Whether the level was won (can be true even if done is false)
         '''
+        assert action in self.available_actions, f"[Environment] Action {action} not in available actions for this environment"
+
         if self.benchmark == self.Benchmark.ARC:
             if action == 6:
                 assert xy is not None, "[Environment] xy coordinates must be provided for ACTION6"
+                xy = np.clip(np.rint((xy - self.padding) * (64 / self.target_size)), 0, 63).astype(np.int32) # scale back to 64x64 coordinates
                 obs = self.as_arc.step(GameAction(action, ComplexAction), {"x": xy[0], "y": xy[1]})
             else:
                 obs = self.as_arc.step(GameAction(action, SimpleAction))
             if (obs is None):
+                print(action, xy)
                 raise RuntimeError("[Environment] Failed to step ARC environment")
             if obs.full_reset:
                 self.color_map = self.generate_color_map()
                 self.target_size = self.rng.integers(64, 161)
+                self.padding = self.rng.integers(0, [210-self.target_size + 1, 160-self.target_size + 1])
             info = {
                 "levels_completed": obs.levels_completed,
             }

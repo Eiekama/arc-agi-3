@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import numpy as np
 from collections import OrderedDict
 
-from policy_model import ResidualBlock
+from policy_model import ResidualNetwork
 
 class ResNetBlock(nn.Module):
     def __init__(self, channels):
@@ -61,6 +61,8 @@ class StateEncoder(nn.Module): # modified ResNet
     def __init__(self, num_blocks : tuple[int, int, int, int], embedding_dim=512):
         assert len(num_blocks) == 4 and all(n > 0 for n in num_blocks), "num_blocks should have 4 elements and all should be positive"
         super(StateEncoder, self).__init__()
+        self.embedding_dim = embedding_dim
+
         self.conv = nn.ModuleList([
             nn.Sequential(OrderedDict([
                 ("conv", nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3)),
@@ -91,9 +93,9 @@ class StateEncoder(nn.Module): # modified ResNet
         return output
     
 class StateDecoder(nn.Module): # use a similar architecture as the policy model
-    def __init__(self, embedding_dim=512, image_size : tuple[int, int]=(210, 160)):
+    def __init__(self, embedding_dim=512, image_size : tuple[int, int]=(210, 160), decoder_depth=4):
         super(StateDecoder, self).__init__()
-        self.decoder = ResidualBlock(embedding_dim, 3*image_size[0]*image_size[1])
+        self.decoder = ResidualNetwork(embedding_dim, 3*image_size[0]*image_size[1], num_blocks=decoder_depth)
 
     def forward(self, x):
         output = self.decoder(x)
@@ -101,14 +103,34 @@ class StateDecoder(nn.Module): # use a similar architecture as the policy model
 
 
 if __name__ == "__main__":
-    model = StateEncoder((2, 2, 2, 2))
-    x = torch.randn(1, 3, 210, 160)
-    outputs = model(x)
-    for i, output in enumerate(outputs):
-        print(f"Output {i} shape: {output.shape}")
-    # prints:
-    # Output 0 shape: torch.Size([1, 64, 53, 40])
-    # Output 1 shape: torch.Size([1, 64, 53, 40])
-    # Output 2 shape: torch.Size([1, 128, 27, 20])
-    # Output 3 shape: torch.Size([1, 256, 14, 10])
-    # Output 4 shape: torch.Size([1, 512, 7, 5])
+    from trainer import StateEncoderTrainer, load_environments
+
+    # import argparse
+    # parser = argparse.ArgumentParser()
+    # parser.add_argument("-l", "--load", action='store_true', help="Whether to load from checkpoint")
+    # parser.add_argument("-d", "--dir", type=str, default="./checkpoints", help="Directory to load from or save to")
+    # parser.add_argument("-s", "--step", type=int, default=None, help="Step to load from, if loading from checkpoint")
+    # args = parser.parse_args()
+
+    envs = load_environments()
+
+    encoder_size = (3, 4, 6, 3) # ResNet34
+    embedding_dim = 512
+    decoder_depth = 2
+    bs = 128
+    lr = 0.001
+    encoder = StateEncoder(encoder_size, embedding_dim)
+    decoder = StateDecoder(embedding_dim=embedding_dim, decoder_depth=decoder_depth)
+    trainer = StateEncoderTrainer(
+        f"final",
+        encoder, decoder, envs,
+        wandb_logging=True, wandb_project="arc3-state-encoder"
+    )
+    trainer.init_wandb_run({
+        'encoder_size': encoder_size,
+        'embedding_dim': embedding_dim,
+        'decoder_depth': decoder_depth,
+        'batch_size': bs,
+        'learning_rate': lr
+    })
+    trainer.train(epochs=20000, bs=bs, lr=lr, save_every=2000)
