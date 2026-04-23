@@ -50,10 +50,11 @@ class ResidualNetwork(nn.Module):
         torch.nn.init.zeros_(self.final.bias) # type: ignore
 
     def forward(self, x):
-        output = self.initial(x)
+        # stop gap measure to prevent nans from crashing training, need to investigate source of nans later
+        output = torch.nan_to_num(self.initial(x))
         for block in self.blocks:
-            output = block(output)
-        return self.final(output)
+            output = torch.nan_to_num(block(output))
+        return torch.nan_to_num(self.final(output))
     
     
 class Critic(nn.Module):
@@ -180,7 +181,7 @@ class Actor(nn.Module):
 if __name__ == "__main__":
     from trainer import PolicyTrainer, load_environments, RolloutReplayBuffer
     from state_encoder import StateEncoder
-    import copy
+    import copy, os
 
     envs = load_environments()
 
@@ -205,6 +206,8 @@ if __name__ == "__main__":
     for e_dim in critic_embed_dim:
         for c_depth in critic_depth:
             for a_depth in actor_depth:
+                if os.path.exists(f"./checkpoints/ablations/contrastive-rl/arc3-policy_dim{e_dim}_critic{c_depth}_actor{a_depth}.pt"):
+                    continue
                 actor = Actor(state_encoder, depth=a_depth)
                 critic = Critic(state_encoder, out_features=e_dim, depth=c_depth)
 

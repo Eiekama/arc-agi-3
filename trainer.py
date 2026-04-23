@@ -326,8 +326,7 @@ class PolicyTrainer(Trainer):
         return torch.mean(0.2 * log_probs - critic_score)
 
     def train(self, epochs, bs, utd=40, save_every=None, directory="./checkpoints"):
-        if self.buffer.size == 0: self.fill_buffer(n=80, show_progress=True)
-        if self.epoch == 0: self.buffer.save_data(directory, self.name)
+        if self.buffer.size == 0: self.fill_buffer(show_progress=True)
 
         pbar = tqdm(range(epochs))
         for _ in pbar:
